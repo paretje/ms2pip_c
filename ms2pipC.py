@@ -16,6 +16,7 @@ import pandas as pd
 import ms2pipfeatures_pyx_HCD
 import ms2pipfeatures_pyx_HCDch2
 import ms2pipfeatures_pyx_CID
+import ms2pipfeatures_pyx_HCDphospho
 # import ms2pipfeatures_pyx_HCDiTRAQ4phospho
 # import ms2pipfeatures_pyx_HCDiTRAQ4
 import ms2pipfeatures_pyx_ETD
@@ -40,6 +41,8 @@ def process_peptides(worker_num, data, a_map, afile, modfile, modfile2, PTMmap, 
         ms2pipfeatures_pyx = ms2pipfeatures_pyx_CID
     elif fragmethod == "HCD":
         ms2pipfeatures_pyx = ms2pipfeatures_pyx_HCD
+    elif fragmethod == "HCDphospho":
+        ms2pipfeatures_pyx = ms2pipfeatures_pyx_HCDphospho
     elif fragmethod == "HCDiTRAQ4phospho":
         ms2pipfeatures_pyx = ms2pipfeatures_pyx_HCDiTRAQ4phospho
     elif fragmethod == "HCDiTRAQ4":
@@ -80,7 +83,11 @@ def process_peptides(worker_num, data, a_map, afile, modfile, modfile2, PTMmap, 
         mzs = ms2pipfeatures_pyx.get_mzs(modpeptide)
 
         # get ion intensities
-        predictions = ms2pipfeatures_pyx.get_predictions(peptide, modpeptide, ch)
+        if fragmethod == 'HCDphospho':
+            mod_features, _ = add_modification_features(modpeptide, mod_ids=[38, 39, 40])
+            predictions = ms2pipfeatures_pyx.get_predictions(peptide, modpeptide, ch, np.array(mod_features, dtype=np.uint16))
+        else:
+            predictions = ms2pipfeatures_pyx.get_predictions(peptide, modpeptide, ch)
 
         # return predictions as a DataFrame
         tmp = pd.DataFrame(columns=['spec_id', 'peplen', 'charge', 'ion', 'ionnumber', 'mz', 'prediction'])
@@ -129,6 +136,8 @@ def process_spectra(worker_num, spec_file, vector_file, data, a_map, afile, modf
         ms2pipfeatures_pyx = ms2pipfeatures_pyx_CID
     elif fragmethod == "HCD":
         ms2pipfeatures_pyx = ms2pipfeatures_pyx_HCD
+    elif fragmethod == "HCDphospho":
+        ms2pipfeatures_pyx = ms2pipfeatures_pyx_HCDphospho
     elif fragmethod == "HCDiTRAQ4phospho":
         ms2pipfeatures_pyx = ms2pipfeatures_pyx_HCDiTRAQ4phospho
     elif fragmethod == "HCDiTRAQ4":
@@ -148,15 +157,13 @@ def process_spectra(worker_num, spec_file, vector_file, data, a_map, afile, modf
     # cols contains the names of the computed features
     cols_n = get_feature_names()
 
-    dataresult_list = []
-
     title = ""
     charge = 0
     msms = []
     peaks = []
     f = open(spec_file)
     skip = False
-    vectors = []
+    result_list = []
     pcount = 0
     while 1:
         rows = f.readlines(3000)
@@ -231,7 +238,19 @@ def process_spectra(worker_num, spec_file, vector_file, data, a_map, afile, modf
                 targets = ms2pipfeatures_pyx.get_targets(modpeptide, msms, peaks, float(fragerror))
 
                 if vector_file:
-                    tmp = pd.DataFrame(ms2pipfeatures_pyx.get_vector(peptide, modpeptide, charge), columns=cols_n, dtype=np.uint16)
+                    if fragmethod == 'HCDphospho':
+                        mod_features, mod_feature_names = add_modification_features(modpeptide, mod_ids=[38, 39, 40])
+                        tmp = pd.DataFrame(
+                            ms2pipfeatures_pyx.get_vector(peptide, modpeptide, charge, np.array(mod_features, dtype=np.uint16)),
+                            columns=cols_n + mod_feature_names,
+                            dtype=np.uint16
+                        )
+                    else:
+                        tmp = pd.DataFrame(
+                            ms2pipfeatures_pyx.get_vector(peptide, modpeptide, charge),
+                            columns=cols_n,
+                            dtype=np.uint16
+                        )
                     # tmp = pd.DataFrame(ms2pipfeatures_pyx.get_vector(peptide, modpeptide, charge), dtype=np.uint16)
                     tmp["psmid"] = [title] * len(tmp)
                     tmp["targetsB"] = targets[0]
@@ -242,10 +261,15 @@ def process_spectra(worker_num, spec_file, vector_file, data, a_map, afile, modf
                     if fragmethod == 'HCDch2':
                         tmp["targetsB2"] = targets[2]
                         tmp["targetsY2"] = targets[3][::-1]
-                    vectors.append(tmp)
+                    result_list.append(tmp)
                 else:
                     # predict the b- and y-ion intensities from the peptide
-                    predictions = ms2pipfeatures_pyx.get_predictions(peptide, modpeptide, charge)
+                    if fragmethod == 'HCDphospho':
+                        mod_features, _ = add_modification_features(modpeptide, mod_ids=[38, 39, 40])
+                        predictions = ms2pipfeatures_pyx.get_predictions(peptide, modpeptide, charge, np.array(mod_features, dtype=np.uint16))
+                    else:
+                        predictions = ms2pipfeatures_pyx.get_predictions(peptide, modpeptide, charge)
+
                     tmp = pd.DataFrame(columns=['spec_id', 'peplen', 'charge', 'ion', 'ionnumber', 'mz', 'target', 'prediction'])
                     num_ions = len(predictions[0])
                     if fragmethod == 'ETD':
@@ -277,29 +301,21 @@ def process_spectra(worker_num, spec_file, vector_file, data, a_map, afile, modf
                     tmp["target"] = tmp["target"].astype(np.float32)
                     tmp["prediction"] = tmp["prediction"].astype(np.float32)
 
-                    dataresult_list.append(tmp)
+                    result_list.append(tmp)
 
                 pcount += 1
                 if (pcount % 500) == 0:
                     print("w{}({})".format(worker_num, pcount), end=', ')
 
     f.close()
-    
-    if dataresult_list:
-        dataresult = pd.concat(dataresult_list)
-    else:
-        dataresult = None
 
-    if vector_file:
-        df = pd.DataFrame()
-        for v in vectors:
-            if v:
-                df = pd.concat([df, v])
-            else:
-                continue
-        return df
+    if len(result_list) > 1:
+        result = pd.concat(result_list)
+    elif len(result_list) == 1:
+        result = result_list[0]
     else:
-        return dataresult
+        result = None
+    return result
 
 
 def get_feature_names():
@@ -533,6 +549,41 @@ def calc_correlations(df):
     return correlations
 
 
+def add_modification_features(modpeptide, mod_ids):
+    """
+    Return, for a given `modpeptide`, a 2D array with features for modifications
+    and a list with their corresponding names.
+
+    In `modpeptide`, modified amino acids get a new ID (`mod_ids`). These IDs start
+    at 38 and depend on the order of the modifications in the config file. This function
+    counts these IDs in the modpeptide and checks on which cleavage sites they are
+    present, both for N- and C-terminal fragment ions. These counts and checks are
+    returned in a 2D-array that can be added to the MS2PIP features. A list with
+    the corresponding feature names is also returned.
+    """
+
+    features = []
+    feature_names = []
+
+    # Turn modpeptide into list and remove N- and C-terminal modifications
+    modpeptide_list = list(modpeptide[1:-1])
+
+    for mod in mod_ids:
+        features.append([modpeptide_list[:s].count(mod) for s in range(1, len(modpeptide_list))])
+        feature_names.append('_'.join(['count', 'B', str(mod)]))
+
+        features.append([modpeptide_list[s:].count(mod) for s in range(1, len(modpeptide_list))])
+        feature_names.append('_'.join(['count', 'Y', str(mod)]))
+
+        features.append([1 if aa == mod else 0 for aa in modpeptide_list[:-1]])
+        feature_names.append('_'.join(['cleave', 'B', str(mod)]))
+
+        features.append([1 if aa == mod else 0 for aa in modpeptide_list[1:]])
+        feature_names.append('_'.join(['cleave', 'Y', str(mod)]))
+
+    return features, feature_names
+
+
 def write_mgf(all_preds_in, output_filename="MS2PIP", unlog=True, write_mode='w+', return_stringbuffer=False, peprec=None):
     all_preds = all_preds_in.copy()
     if unlog:
@@ -686,7 +737,7 @@ def run(pep_file, spec_file=None, vector_file=None, config_file=None, num_cpu=23
         output_filename = '.'.join(pep_file.split('.')[:-1])
 
     # Check if given fragmethod exists:
-    known_fragmethods = ["CID", "HCD", "HCDiTRAQ4phospho", "HCDiTRAQ4", "ETD", "HCDch2"]
+    known_fragmethods = ["CID", "HCD", "HCDphospho", "HCDiTRAQ4phospho", "HCDiTRAQ4", "ETD", "HCDch2"]
     if fragmethod in known_fragmethods:
         print("using {} models".format(fragmethod))
     else:
