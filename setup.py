@@ -59,6 +59,7 @@ with open("README.md", "r") as fh:
     LONG_DESCRIPTION = fh.read()
 
 extra_compile_args = [
+        "-fno-var-tracking-assignments",
         "-fno-var-tracking",
         '-Wno-unused-result',
         '-Wno-cpp',
